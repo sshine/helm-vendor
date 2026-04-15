@@ -1,0 +1,17 @@
+[package]
+name = "helm-vendor"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "CLI for vendoring Helm charts from a charts.toml registry"
+
+[[bin]]
+name = "helm-vendor"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+toml_edit = { version = "0.22", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tempfile = "3"
