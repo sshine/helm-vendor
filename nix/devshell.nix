@@ -18,7 +18,7 @@
             run = "treefmt --fail-on-change --no-cache {staged_files}";
           };
           pre-push.commands.readme = {
-            run = "cargo-readme-workspace --check";
+            run = "cargo-readme-check --check";
           };
         };
       };
@@ -32,7 +32,8 @@
           pkgs.kubernetes-helm
           pkgs.stdenv.cc
           pkgs.cargo-readme
-          config.packages.cargo-readme-workspace
+          config.packages.cargo-readme-check
+          pkgs.just
         ];
 
         env = [

@@ -1,3 +1,6 @@
+//! # helm-vendor
+//!
+//! CLI for vendoring Helm charts from a charts.toml registry
 mod args;
 mod chart;
 mod check;

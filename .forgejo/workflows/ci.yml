@@ -1,0 +1,37 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: native
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Nix dev shell
+        run: nix develop -c true
+
+      - name: Check formatting
+        run: nix develop -c just fmt-check
+
+      - name: Clippy
+        run: nix develop -c just lint
+
+      - name: Test
+        run: nix develop -c just test
+
+      - name: Build
+        run: nix develop -c just build
+
+      - name: Documentation
+        run: nix develop -c just doc
+
+      - name: Check README.md is up to date
+        run: nix develop -c just readme-check
+
+      - name: Package check
+        run: nix develop -c just package-check

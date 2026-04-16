@@ -3,7 +3,7 @@
   perSystem =
     { pkgs, ... }:
     {
-      packages.cargo-readme-workspace = pkgs.writeShellScriptBin "cargo-readme-workspace" ''
+      packages.cargo-readme-check = pkgs.writeShellScriptBin "cargo-readme-check" ''
         set -euo pipefail
 
         check=0
@@ -20,7 +20,7 @@
           if [ "$check" -eq 1 ]; then
             diff "$tmp" "$root/README.md" || true
             rm -f "$tmp"
-                echo "README.md is out of date. Run 'cargo-readme-workspace' and commit the result." >&2
+                echo "README.md is out of date. Run 'cargo-readme-check' and commit the result." >&2
             exit 1
           fi
           mv "$tmp" "$root/README.md"
