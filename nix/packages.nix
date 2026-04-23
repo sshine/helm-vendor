@@ -16,7 +16,12 @@
         buildInputs = [ pkgs.makeWrapper ];
         postBuild = ''
           wrapProgram $out/bin/helm-vendor \
-            --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.kubernetes-helm pkgs.diffutils ]}
+            --prefix PATH : ${
+              pkgs.lib.makeBinPath [
+                pkgs.kubernetes-helm
+                pkgs.diffutils
+              ]
+            }
         '';
       };
     in
