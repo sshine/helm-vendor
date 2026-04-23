@@ -36,6 +36,7 @@
           pkgs.stdenv.cc
           pkgs.cargo-readme
           config.packages.cargo-readme-check
+          pkgs.diffutils
           pkgs.just
         ];
 
