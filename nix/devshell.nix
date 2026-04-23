@@ -17,6 +17,9 @@
           pre-commit.commands.treefmt = {
             run = "treefmt --fail-on-change --no-cache {staged_files}";
           };
+          pre-push.commands.treefmt = {
+            run = "treefmt --fail-on-change";
+          };
           pre-push.commands.readme = {
             run = "cargo-readme-check --check";
           };
