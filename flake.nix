@@ -13,6 +13,9 @@
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.devshell.follows = "devshell";
       inputs.flake-parts.follows = "flake-parts";
+      inputs.cachix.inputs.nixpkgs.follows = "nixpkgs";
+      inputs.cachix.inputs.git-hooks.inputs.nixpkgs.follows = "nixpkgs";
+      inputs.pre-commit-hooks.inputs.gitignore.follows = "crate2nix/cachix/git-hooks/gitignore";
     };
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";
