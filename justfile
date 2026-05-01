@@ -22,4 +22,7 @@ readme-check:
 package-check:
     nix develop -c cargo package --workspace
 
-ci: fmt-check lint test build doc readme-check package-check
+lock-check:
+    nix develop -c cargo metadata --locked --format-version 1 > /dev/null
+
+ci: fmt-check lock-check lint test build doc readme-check package-check

@@ -18,6 +18,9 @@ jobs:
       - name: Check formatting
         run: nix develop -c just fmt-check
 
+      - name: Cargo.lock sync check
+        run: nix develop -c just lock-check
+
       - name: Clippy
         run: nix develop -c just lint
 

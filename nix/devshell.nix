@@ -23,6 +23,9 @@
           pre-push.commands.readme = {
             run = "cargo-readme-check --check";
           };
+          pre-push.commands.lock-check = {
+            run = "cargo metadata --locked --format-version 1 > /dev/null";
+          };
         };
       };
     in
