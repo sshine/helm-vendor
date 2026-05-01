@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::chart::{self, ChartSource};
+use crate::progress;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -32,26 +33,39 @@ pub fn run(config_path: &Path, name: Option<&str>, all: bool) -> Result<(), Erro
         return Err(Error::NoTarget);
     };
 
+    let mut progress = progress::Progress::new(targets.len());
     let mut drifted = Vec::new();
     let mut errors = Vec::new();
 
     for name in &targets {
+        progress.tick(name);
         let chart_entry = registry.get(name)?;
         match check_chart(name, chart_entry, &charts_dir) {
-            Ok(CheckResult::Match) => println!("  ok {name}"),
+            Ok(CheckResult::Match) => {
+                if !progress.interactive() {
+                    println!("  ok {name}");
+                }
+            }
             Ok(CheckResult::Drift) => {
+                progress.clear();
                 eprintln!("  drift {name}");
                 drifted.push(name.as_str());
             }
             Ok(CheckResult::Missing) => {
+                progress.clear();
                 eprintln!("  missing {name}");
                 drifted.push(name.as_str());
             }
             Err(e) => {
+                progress.clear();
                 eprintln!("  error {name}: {e}");
                 errors.push(name.as_str());
             }
         }
+    }
+    progress.clear();
+    if progress.interactive() && drifted.is_empty() && errors.is_empty() {
+        println!("checked {} chart(s)", targets.len());
     }
 
     if drifted.is_empty() && errors.is_empty() {

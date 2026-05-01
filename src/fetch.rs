@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::chart::{self, ChartSource};
+use crate::progress;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -30,15 +31,22 @@ pub fn run(config_path: &Path, name: Option<&str>, all: bool) -> Result<(), Erro
         return Err(Error::NoTarget);
     };
 
+    let mut progress = progress::Progress::new(targets.len());
     let mut failed = Vec::new();
     for name in &targets {
+        progress.tick(name);
         let chart_entry = registry.get(name)?;
         if let Err(e) = pull_chart(name, chart_entry, &charts_dir) {
+            progress.clear();
             eprintln!("  failed {name}: {e}");
             failed.push(name.as_str());
-        } else {
+        } else if !progress.interactive() {
             println!("  fetched {name}");
         }
+    }
+    progress.clear();
+    if progress.interactive() && failed.is_empty() {
+        println!("fetched {} chart(s)", targets.len());
     }
 
     if failed.is_empty() {

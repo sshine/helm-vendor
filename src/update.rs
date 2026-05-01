@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::chart;
+use crate::progress;
 use crate::resolver::{self, Latest};
 
 #[derive(Debug, thiserror::Error)]
@@ -74,32 +75,41 @@ fn bump_all_to_latest(config_path: &Path) -> Result<(), Error> {
     let content = std::fs::read_to_string(config_path)?;
     let mut doc = content.parse::<toml_edit::DocumentMut>()?;
 
+    let mut progress = progress::Progress::new(registry.charts.len());
     let mut failed = Vec::new();
     for (name, chart_entry) in &registry.charts {
+        progress.tick(name);
         match resolver::latest_version(chart_entry) {
             Ok(Latest::Version(v)) => {
                 let new_version = preserve_v_prefix(&chart_entry.version, &v);
                 if new_version == chart_entry.version {
-                    println!("  {name} already at {new_version}");
+                    if !progress.interactive() {
+                        println!("  {name} already at {new_version}");
+                    }
                     continue;
                 }
                 if let Err(e) = write_version(&mut doc, name, &new_version) {
+                    progress.clear();
                     eprintln!("  failed {name}: {e}");
                     failed.push(name.clone());
                 } else {
+                    progress.clear();
                     println!("  updated {name} to {new_version}");
                 }
             }
             Ok(Latest::Unknown(reason)) => {
+                progress.clear();
                 eprintln!("  unresolved {name}: {reason}");
                 failed.push(name.clone());
             }
             Err(e) => {
+                progress.clear();
                 eprintln!("  error {name}: {e}");
                 failed.push(name.clone());
             }
         }
     }
+    progress.clear();
 
     std::fs::write(config_path, doc.to_string())?;
 
