@@ -4,14 +4,17 @@
 mod args;
 mod chart;
 mod check;
+mod fetch;
+mod outdated;
+mod resolver;
 mod update;
-mod vendor;
 
 use std::process::ExitCode;
 
 use clap::Parser;
 
 use crate::args::{Args, Command};
+use crate::resolver::Latest;
 
 fn main() -> ExitCode {
     let args = Args::parse();
@@ -25,7 +28,7 @@ fn main() -> ExitCode {
     };
 
     match args.command {
-        Command::Vendor { name, all } => match vendor::run(&config_path, name.as_deref(), all) {
+        Command::Fetch { name, all } => match fetch::run(&config_path, name.as_deref(), all) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("error: {e}");
@@ -39,18 +42,36 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Command::Update { name, version } => match update::run(&config_path, &name, &version) {
+        Command::Update {
+            name,
+            version,
+            latest,
+            all,
+        } => match update::run(
+            &config_path,
+            name.as_deref(),
+            version.as_deref(),
+            latest,
+            all,
+        ) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("error: {e}");
                 ExitCode::FAILURE
             }
         },
-        Command::List => match chart::load(&config_path) {
+        Command::List { check } => match chart::load(&config_path) {
             Ok(registry) => {
-                list_charts(&registry);
+                list_charts(&registry, check);
                 ExitCode::SUCCESS
             }
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Command::Outdated { name } => match outdated::run(&config_path, name.as_deref()) {
+            Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("error: {e}");
                 ExitCode::FAILURE
@@ -59,7 +80,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn list_charts(registry: &chart::ChartRegistry) {
+fn list_charts(registry: &chart::ChartRegistry, check: bool) {
     let name_width = registry.charts.keys().map(|n| n.len()).max().unwrap_or(4);
     let version_width = registry
         .charts
@@ -68,18 +89,66 @@ fn list_charts(registry: &chart::ChartRegistry) {
         .max()
         .unwrap_or(7);
 
-    println!(
-        "{:name_width$}  {:version_width$}  source",
-        "NAME", "VERSION"
-    );
-    for (name, chart) in &registry.charts {
-        let source = match &chart.source {
-            chart::ChartSource::Repo { repo } => repo.as_str(),
-            chart::ChartSource::Oci { oci } => oci.as_str(),
-        };
+    let latest_cells: Vec<String> = if check {
+        registry
+            .charts
+            .values()
+            .map(|c| match resolver::latest_version(c) {
+                Ok(Latest::Version(v)) => {
+                    let formatted = if c.version.starts_with('v') {
+                        format!("v{}", v.trim_start_matches('v'))
+                    } else {
+                        v.trim_start_matches('v').to_string()
+                    };
+                    if resolver::is_up_to_date(&c.version, &v) {
+                        formatted
+                    } else {
+                        format!("{formatted} ↑")
+                    }
+                }
+                Ok(Latest::Unknown(_)) => "?".to_string(),
+                Err(_) => "?".to_string(),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    if check {
+        let latest_width = latest_cells
+            .iter()
+            .map(|c| c.len())
+            .max()
+            .unwrap_or(6)
+            .max(6);
         println!(
-            "{name:name_width$}  {:version_width$}  {source}",
-            chart.version
+            "{:name_width$}  {:version_width$}  {:latest_width$}  source",
+            "NAME", "VERSION", "LATEST"
         );
+        for ((name, chart), latest_cell) in registry.charts.iter().zip(latest_cells.iter()) {
+            let source = match &chart.source {
+                chart::ChartSource::Repo { repo } => repo.as_str(),
+                chart::ChartSource::Oci { oci } => oci.as_str(),
+            };
+            println!(
+                "{name:name_width$}  {:version_width$}  {latest_cell:latest_width$}  {source}",
+                chart.version
+            );
+        }
+    } else {
+        println!(
+            "{:name_width$}  {:version_width$}  source",
+            "NAME", "VERSION"
+        );
+        for (name, chart) in &registry.charts {
+            let source = match &chart.source {
+                chart::ChartSource::Repo { repo } => repo.as_str(),
+                chart::ChartSource::Oci { oci } => oci.as_str(),
+            };
+            println!(
+                "{name:name_width$}  {:version_width$}  {source}",
+                chart.version
+            );
+        }
     }
 }

@@ -37,7 +37,7 @@ pub fn run(config_path: &Path, name: Option<&str>, all: bool) -> Result<(), Erro
             eprintln!("  failed {name}: {e}");
             failed.push(name.as_str());
         } else {
-            println!("  vendored {name}");
+            println!("  fetched {name}");
         }
     }
 

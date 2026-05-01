@@ -20,11 +20,12 @@ pub struct Args {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Pull chart(s) from upstream into the charts/ directory.
-    Vendor {
-        /// Chart name to vendor. Omit when using --all.
+    #[command(alias = "vendor")]
+    Fetch {
+        /// Chart name to fetch. Omit when using --all.
         name: Option<String>,
 
-        /// Vendor all charts declared in charts.toml.
+        /// Fetch all charts declared in charts.toml.
         #[arg(long)]
         all: bool,
     },
@@ -41,15 +42,34 @@ pub enum Command {
 
     /// Update the version of a chart in charts.toml.
     Update {
-        /// Chart name.
-        name: String,
+        /// Chart name. Omit when using --all --latest.
+        name: Option<String>,
 
-        /// New version string.
-        version: String,
+        /// New version string. Mutually exclusive with --latest.
+        #[arg(conflicts_with = "latest")]
+        version: Option<String>,
+
+        /// Resolve and write the latest upstream version.
+        #[arg(long)]
+        latest: bool,
+
+        /// Apply --latest to every chart in charts.toml.
+        #[arg(long, requires = "latest")]
+        all: bool,
     },
 
     /// List all charts and their versions.
-    List,
+    List {
+        /// Query upstream and add a LATEST column.
+        #[arg(long)]
+        check: bool,
+    },
+
+    /// Show charts whose pinned version is older than what's upstream.
+    Outdated {
+        /// Limit to a single chart.
+        name: Option<String>,
+    },
 }
 
 impl Args {
