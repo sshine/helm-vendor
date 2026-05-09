@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -70,6 +70,28 @@ pub enum Command {
         /// Limit to a single chart.
         name: Option<String>,
     },
+
+    /// Print a shell completion script. Source it with e.g.
+    /// `eval "$(helm-vendor completion zsh)"`.
+    Completion {
+        /// Shell to generate the completion script for.
+        #[arg(value_enum, required_unless_present = "chart_names")]
+        shell: Option<Shell>,
+
+        /// Print chart names from charts.toml. Used internally by the
+        /// generated completion scripts to populate dynamic chart-name
+        /// completion; prints nothing (and exits 0) when no charts.toml
+        /// is reachable.
+        #[arg(long, hide = true, conflicts_with = "shell")]
+        chart_names: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum Shell {
+    Bash,
+    Zsh,
+    Fish,
 }
 
 impl Args {

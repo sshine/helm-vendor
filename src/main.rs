@@ -5,6 +5,7 @@ mod args;
 mod chart;
 mod check;
 mod color;
+mod completion;
 mod fetch;
 mod outdated;
 mod progress;
@@ -29,6 +30,13 @@ pub(crate) const RESOLVE_CONCURRENCY: usize = 8;
 fn main() -> ExitCode {
     let args = Args::parse();
 
+    // `completion` must work without a charts.toml — users may invoke it from
+    // anywhere to install shell hooks, and the hidden `--chart-names` callback
+    // is expected to silently emit nothing when no registry is reachable.
+    if let Command::Completion { shell, chart_names } = &args.command {
+        return completion::run(args.config_path(), *shell, *chart_names);
+    }
+
     let config_path = match args.config_path() {
         Some(p) => p,
         None => {
@@ -38,6 +46,7 @@ fn main() -> ExitCode {
     };
 
     match args.command {
+        Command::Completion { .. } => unreachable!(),
         Command::Fetch { name, all } => match fetch::run(&config_path, name.as_deref(), all) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
