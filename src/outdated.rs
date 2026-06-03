@@ -14,7 +14,7 @@ pub enum Error {
     HasOutdated { count: usize },
 }
 
-const PINNED_WIDTH: usize = 8;
+const MIN_PINNED_WIDTH: usize = 8;
 const LATEST_VERSION_WIDTH: usize = 7;
 const LATEST_WIDTH: usize = LATEST_VERSION_WIDTH + 2;
 
@@ -39,7 +39,12 @@ pub fn run(config_path: &Path, name: Option<&str>) -> Result<(), Error> {
         .max()
         .unwrap_or(4)
         .max(4);
-    let pw = PINNED_WIDTH;
+    let pw = targets
+        .iter()
+        .map(|(_, c)| c.version.chars().count())
+        .max()
+        .unwrap_or(MIN_PINNED_WIDTH)
+        .max(MIN_PINNED_WIDTH);
     let lw = LATEST_WIDTH;
     let header = format!(
         "{:name_width$}  {:pw$}  {:lw$}  source",

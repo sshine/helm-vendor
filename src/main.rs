@@ -99,17 +99,15 @@ fn main() -> ExitCode {
     }
 }
 
-/// Column widths for `list` / `list --check` tables. Name width is derived
-/// from the chart names (known up front); the version columns use a fixed
-/// margin so rows can be streamed in non-interactive mode without buffering
-/// for alignment. A larger-than-budget version makes that one row ugly but
-/// doesn't reflow earlier rows.
+/// Column widths for `list` / `list --check` tables. Name and pinned-version
+/// widths are derived from the registry (both known up front), so rows stream
+/// in non-interactive mode without buffering for alignment.
 ///
 /// The LATEST cell is built as `{latest:LATEST_VERSION_WIDTH} ↑` (or two
 /// spaces in lieu of ` ↑` when up-to-date), so the arrow slot is always
 /// reserved and rows have predictable width regardless of which charts are
 /// outdated.
-const VERSION_WIDTH: usize = 8;
+const MIN_VERSION_WIDTH: usize = 8;
 const LATEST_VERSION_WIDTH: usize = 7;
 const LATEST_WIDTH: usize = LATEST_VERSION_WIDTH + 2;
 
@@ -121,7 +119,13 @@ fn list_charts(registry: &chart::ChartRegistry, check: bool) {
         .max()
         .unwrap_or(4)
         .max(4);
-    let vw = VERSION_WIDTH;
+    let vw = registry
+        .charts
+        .values()
+        .map(|c| c.version.chars().count())
+        .max()
+        .unwrap_or(MIN_VERSION_WIDTH)
+        .max(MIN_VERSION_WIDTH);
     let lw = LATEST_WIDTH;
 
     if !check {
