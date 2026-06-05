@@ -132,10 +132,12 @@ fn check_chart(name: &str, chart: &chart::Chart, charts_dir: &Path) -> Result<Ch
         });
     }
 
-    let pulled = tmp.path().join(name);
-    if !pulled.is_dir() {
-        return Ok(CheckResult::Missing);
-    }
+    // helm names the extracted dir after Chart.yaml's `name`, which may
+    // differ from our TOML key. Locate by structure to stay agnostic.
+    let pulled = match chart::locate_extracted(tmp.path()) {
+        Ok(p) => p,
+        Err(_) => return Ok(CheckResult::Missing),
+    };
 
     let diff = std::process::Command::new("diff")
         .args([

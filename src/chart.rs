@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -45,6 +45,32 @@ struct RawChart {
     oci: Option<String>,
     chart: String,
     version: String,
+}
+
+/// Find the single chart directory inside a helm-pull output dir. `helm pull
+/// --untar` writes both `<chart>.tgz` and `<chart>/` named after Chart.yaml's
+/// `name` field — which may differ from our TOML key — so callers locate it
+/// by structure instead of by name.
+pub fn locate_extracted(dir: &Path) -> std::io::Result<PathBuf> {
+    let mut found: Option<PathBuf> = None;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            if found.is_some() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "helm pull produced multiple directories",
+                ));
+            }
+            found = Some(entry.path());
+        }
+    }
+    found.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "helm pull produced no extracted directory",
+        )
+    })
 }
 
 pub fn load(path: &Path) -> Result<ChartRegistry, Error> {

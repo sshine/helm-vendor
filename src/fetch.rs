@@ -60,12 +60,14 @@ pub fn run(config_path: &Path, name: Option<&str>, all: bool) -> Result<(), Erro
 }
 
 pub(crate) fn pull_chart(name: &str, chart: &chart::Chart, charts_dir: &Path) -> Result<(), Error> {
-    std::fs::create_dir_all(charts_dir).ok();
+    std::fs::create_dir_all(charts_dir)?;
 
-    let dest = charts_dir.join(name);
-    if dest.exists() {
-        std::fs::remove_dir_all(&dest)?;
-    }
+    // Pull into a tempdir co-located with `charts_dir` so the final rename
+    // stays on the same filesystem. helm names the output directory after
+    // Chart.yaml's `name`, which may differ from our TOML key (e.g. `[istio-cni]`
+    // with `chart = "cni"`); we locate it by structure and move it under the
+    // TOML key.
+    let tmp = tempfile::tempdir_in(charts_dir)?;
 
     let output = match &chart.source {
         ChartSource::Repo { repo } => {
@@ -74,7 +76,7 @@ pub(crate) fn pull_chart(name: &str, chart: &chart::Chart, charts_dir: &Path) ->
                 "pull",
                 "--untar",
                 "-d",
-                charts_dir.to_str().unwrap_or("."),
+                tmp.path().to_str().unwrap_or("."),
                 "--repo",
                 repo,
                 "--version",
@@ -89,7 +91,7 @@ pub(crate) fn pull_chart(name: &str, chart: &chart::Chart, charts_dir: &Path) ->
                 "pull",
                 "--untar",
                 "-d",
-                charts_dir.to_str().unwrap_or("."),
+                tmp.path().to_str().unwrap_or("."),
                 "--version",
                 &chart.version,
                 oci,
@@ -105,6 +107,13 @@ pub(crate) fn pull_chart(name: &str, chart: &chart::Chart, charts_dir: &Path) ->
             stderr,
         });
     }
+
+    let extracted = chart::locate_extracted(tmp.path())?;
+    let dest = charts_dir.join(name);
+    if dest.exists() {
+        std::fs::remove_dir_all(&dest)?;
+    }
+    std::fs::rename(&extracted, &dest)?;
 
     Ok(())
 }
