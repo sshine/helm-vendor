@@ -1,6 +1,7 @@
 //! # helm-vendor
 //!
 //! CLI for vendoring Helm charts from a charts.toml registry
+mod add;
 mod args;
 mod chart;
 mod check;
@@ -37,6 +38,23 @@ fn main() -> ExitCode {
         return completion::run(args.config_path(), *shell, *chart_names);
     }
 
+    // `add` also works without a pre-existing charts.toml: it falls back to
+    // creating one in the current directory when none is found up the tree.
+    if let Command::Add { name, url, version } = &args.command {
+        let config_path = args.config_path().unwrap_or_else(|| {
+            std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                .join("charts.toml")
+        });
+        return match add::run(&config_path, name, url, version.as_deref()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
     let config_path = match args.config_path() {
         Some(p) => p,
         None => {
@@ -46,7 +64,7 @@ fn main() -> ExitCode {
     };
 
     match args.command {
-        Command::Completion { .. } => unreachable!(),
+        Command::Completion { .. } | Command::Add { .. } => unreachable!(),
         Command::Fetch { name, all } => match fetch::run(&config_path, name.as_deref(), all) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {

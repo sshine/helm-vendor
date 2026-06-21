@@ -19,6 +19,19 @@ pub struct Args {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Add a new chart to charts.toml and vendor it. Creates charts.toml if
+    /// it does not exist.
+    Add {
+        /// Chart name. Used as the charts.toml key and the chart name to pull.
+        name: String,
+
+        /// Source URL: an `https://` Helm repo or an `oci://` reference.
+        url: String,
+
+        /// Version to pin. Omit to resolve and pin the latest upstream version.
+        version: Option<String>,
+    },
+
     /// Pull chart(s) from upstream into the charts/ directory.
     #[command(alias = "vendor")]
     Fetch {

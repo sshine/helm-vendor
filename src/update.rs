@@ -140,7 +140,7 @@ fn write_version(doc: &mut toml_edit::DocumentMut, name: &str, version: &str) ->
 
 /// If the existing pin uses a leading `v` (e.g. cert-manager's `v1.20.1`),
 /// keep that style on the new version.
-fn preserve_v_prefix(existing: &str, new: &str) -> String {
+pub(crate) fn preserve_v_prefix(existing: &str, new: &str) -> String {
     let stripped = new.trim_start_matches('v').to_string();
     if existing.starts_with('v') {
         format!("v{stripped}")

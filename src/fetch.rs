@@ -59,7 +59,7 @@ pub fn run(config_path: &Path, name: Option<&str>, all: bool) -> Result<(), Erro
     }
 }
 
-fn pull_chart(name: &str, chart: &chart::Chart, charts_dir: &Path) -> Result<(), Error> {
+pub(crate) fn pull_chart(name: &str, chart: &chart::Chart, charts_dir: &Path) -> Result<(), Error> {
     std::fs::create_dir_all(charts_dir).ok();
 
     let dest = charts_dir.join(name);
