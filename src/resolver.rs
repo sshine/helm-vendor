@@ -56,6 +56,15 @@ pub fn is_up_to_date(pinned: &str, latest: &str) -> bool {
     pinned.trim_start_matches('v') == latest.trim_start_matches('v')
 }
 
+/// SemVer-order `pinned` against `latest`, ignoring an optional leading `v`.
+/// `None` when either side isn't parseable SemVer — the caller decides how to
+/// render an incomparable pair.
+pub fn compare(pinned: &str, latest: &str) -> Option<std::cmp::Ordering> {
+    let p = semver::Version::parse(pinned.trim_start_matches('v')).ok()?;
+    let l = semver::Version::parse(latest.trim_start_matches('v')).ok()?;
+    Some(p.cmp(&l))
+}
+
 fn http_client() -> Result<reqwest::blocking::Client, Error> {
     Ok(reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)

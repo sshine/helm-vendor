@@ -49,3 +49,13 @@ pub fn paint(s: &str, sev: Severity, on: bool) -> String {
     };
     format!("{code}{s}\x1b[0m")
 }
+
+/// Paint `s` gray (bright-black) — used for cells we can't or shouldn't treat
+/// as an upgrade: a failed/unknown upstream lookup, or an upstream version
+/// that's *older* than the pin (source moved, catalog reshuffled).
+pub fn gray(s: &str, on: bool) -> String {
+    if !on {
+        return s.to_string();
+    }
+    format!("\x1b[90m{s}\x1b[0m")
+}
