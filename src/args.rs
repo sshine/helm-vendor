@@ -17,12 +17,15 @@ pub struct Args {
     pub command: Command,
 }
 
+/// Chart selection is a variadic positional everywhere, where naming none means
+/// the whole registry. Verifying is a `--check` mode on the command that owns
+/// the data rather than a command of its own.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Add a new chart to charts.toml and vendor it. Creates charts.toml if
-    /// it does not exist.
+    /// Declare a chart in charts.toml and vendor it. Creates charts.toml if it
+    /// does not exist.
     Add {
-        /// Chart name. Used as the charts.toml key and the chart name to pull.
+        /// Chart name. Used as the charts.toml key and the directory name.
         name: String,
 
         /// Source URL: an `https://` Helm repo or an `oci://` reference.
@@ -30,58 +33,64 @@ pub enum Command {
 
         /// Version to pin. Omit to resolve and pin the latest upstream version.
         version: Option<String>,
-    },
 
-    /// Pull chart(s) from upstream into the charts/ directory.
-    #[command(alias = "vendor")]
-    Fetch {
-        /// Chart name to fetch. Omit when using --all.
-        name: Option<String>,
-
-        /// Fetch all charts declared in charts.toml.
+        /// Record the chart without downloading it.
         #[arg(long)]
-        all: bool,
+        no_fetch: bool,
     },
 
-    /// Verify vendored charts match their upstream source.
-    Check {
-        /// Chart name to check. Omit when using --all.
-        name: Option<String>,
+    /// Undeclare charts and delete their vendored directories.
+    #[command(alias = "rm")]
+    Remove {
+        /// Chart names. At least one; `remove` never defaults to everything.
+        #[arg(required = true)]
+        names: Vec<String>,
 
-        /// Check all charts declared in charts.toml.
+        /// Drop the charts.toml entry but leave the vendored directory on disk.
         #[arg(long)]
-        all: bool,
+        keep_files: bool,
     },
 
-    /// Update the version of a chart in charts.toml.
-    Update {
-        /// Chart name. Omit when using --all --latest.
-        name: Option<String>,
+    /// Vendor charts so charts/ matches charts.toml. Defaults to every chart.
+    #[command(aliases = ["fetch", "vendor"])]
+    Sync {
+        /// Chart names. Omit for every chart in charts.toml.
+        names: Vec<String>,
 
-        /// New version string. Mutually exclusive with --latest.
-        #[arg(conflicts_with = "latest")]
-        version: Option<String>,
-
-        /// Resolve and write the latest upstream version.
-        #[arg(long)]
-        latest: bool,
-
-        /// Apply --latest to every chart in charts.toml.
-        #[arg(long, requires = "latest")]
-        all: bool,
-    },
-
-    /// List all charts and their versions.
-    List {
-        /// Query upstream and add a LATEST column.
+        /// Report what is out of sync and exit non-zero instead of writing.
         #[arg(long)]
         check: bool,
     },
 
-    /// Show charts whose pinned version is older than what's upstream.
-    Outdated {
-        /// Limit to a single chart.
-        name: Option<String>,
+    /// Re-pin charts to the latest upstream version and vendor them.
+    Update {
+        /// Chart names. Omit for every chart in charts.toml.
+        names: Vec<String>,
+
+        /// Pin this exact version instead of resolving the latest. Takes
+        /// exactly one chart name.
+        #[arg(long, value_name = "VERSION")]
+        to: Option<String>,
+
+        /// Rewrite charts.toml without vendoring the new versions.
+        #[arg(long)]
+        no_fetch: bool,
+    },
+
+    /// List charts and their pinned versions.
+    #[command(alias = "ls")]
+    List {
+        /// Chart names. Omit for every chart in charts.toml.
+        names: Vec<String>,
+
+        /// Query upstream and add a LATEST column.
+        #[arg(long)]
+        check: bool,
+
+        /// Show only charts that are behind upstream, and exit non-zero when
+        /// any are. Implies --check.
+        #[arg(long)]
+        outdated: bool,
     },
 
     /// Print a shell completion script. Source it with e.g.

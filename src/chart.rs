@@ -19,6 +19,15 @@ pub enum ChartSource {
     Oci { oci: String },
 }
 
+impl ChartSource {
+    pub fn url(&self) -> &str {
+        match self {
+            ChartSource::Repo { repo } => repo.as_str(),
+            ChartSource::Oci { oci } => oci.as_str(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Chart {
     pub chart: String,
@@ -37,6 +46,30 @@ impl ChartRegistry {
             .get(name)
             .ok_or_else(|| Error::NotFound(name.to_string()))
     }
+
+    /// Resolve the names a subcommand was given, where none means every chart.
+    /// Unknown names fail here, before any network or filesystem work starts.
+    pub fn select(&self, names: &[String]) -> Result<Vec<(&String, &Chart)>, Error> {
+        if names.is_empty() {
+            return Ok(self.charts.iter().collect());
+        }
+        names
+            .iter()
+            .map(|name| {
+                self.charts
+                    .get_key_value(name.as_str())
+                    .ok_or_else(|| Error::NotFound(name.clone()))
+            })
+            .collect()
+    }
+}
+
+/// Charts are vendored into a `charts/` directory beside charts.toml.
+pub fn charts_dir(config_path: &Path) -> PathBuf {
+    config_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("charts")
 }
 
 #[derive(Deserialize)]

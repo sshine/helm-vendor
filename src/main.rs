@@ -15,12 +15,11 @@
 //! Usage: helm-vendor [OPTIONS] <COMMAND>
 //!
 //! Commands:
-//!   add         Add a new chart to charts.toml and vendor it. Creates charts.toml if it does not exist
-//!   fetch       Pull chart(s) from upstream into the charts/ directory
-//!   check       Verify vendored charts match their upstream source
-//!   update      Update the version of a chart in charts.toml
-//!   list        List all charts and their versions
-//!   outdated    Show charts whose pinned version is older than what's upstream
+//!   add         Declare a chart in charts.toml and vendor it. Creates charts.toml if it does not exist
+//!   remove      Undeclare charts and delete their vendored directories
+//!   sync        Vendor charts so charts/ matches charts.toml. Defaults to every chart
+//!   update      Re-pin charts to the latest upstream version and vendor them
+//!   list        List charts and their pinned versions
 //!   completion  Print a shell completion script. Source it with e.g. `eval "$(helm-vendor completion zsh)"`
 //!   help        Print this message or the help of the given subcommand(s)
 //!
@@ -29,6 +28,9 @@
 //!   -h, --help             Print help
 //!   -V, --version          Print version
 //! ```
+//!
+//! Every chart-selecting command takes zero or more chart names, where naming none means all of
+//! them. So `sync` vendors the whole registry and `sync cilium cert-manager` vendors two charts.
 //!
 //! ### Adding a new chart
 //!
@@ -40,14 +42,36 @@
 //! $ git commit -m "feat(charts): Vendored cert-manager 1.21.0"
 //! ```
 //!
-//! ### Updating all charts to their latest upstream versions
+//! ### Updating charts to their latest upstream versions
+//!
+//! `update` re-pins and vendors in one step, so charts.toml and `charts/` never disagree.
 //!
 //! ```console
-//! $ helm-vendor update --all --latest
-//!   updated cert-manager to 1.21.0
+//! $ helm-vendor update
+//!   cert-manager 1.20.1 -> 1.21.0
+//!   updated cert-manager
+//! synced 1 of 1 chart(s)
 //!
 //! $ git add charts.toml charts/cert-manager/
 //! $ git commit -m "chore(charts): Updated cert-manager to 1.21.0"
+//! ```
+//!
+//! To see what is available before committing to it, ask `list`:
+//!
+//! ```console
+//! $ helm-vendor list --outdated
+//! NAME          VERSION   LATEST     source
+//! cert-manager  1.20.1    1.21.0 ↑   https://charts.jetstack.io/
+//! ```
+//!
+//! ### Verifying vendored charts in CI
+//!
+//! `sync --check` pulls every chart and compares it against what is committed, exiting non-zero
+//! when they differ. `list --outdated` exits non-zero when an upgrade is available.
+//!
+//! ```console
+//! $ helm-vendor sync --check
+//! 18 chart(s) in sync
 //! ```
 //!
 //! ## Installation
@@ -89,15 +113,17 @@
 mod add;
 mod args;
 mod chart;
-mod check;
 mod color;
 mod completion;
-mod fetch;
-mod outdated;
+mod edit;
+mod list;
 mod progress;
+mod remove;
 mod resolver;
+mod sync;
 mod update;
 
+use std::fmt::Display;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
@@ -108,9 +134,9 @@ use crate::args::{Args, Command};
 use crate::resolver::Latest;
 
 /// Upstream resolution is HTTP-bound; pull a small pool of charts in parallel
-/// so the wall clock for `list --check` / `outdated` is roughly max-latency
-/// rather than sum-of-latencies. 8 keeps us polite to upstream registries
-/// without materially increasing rate-limit risk for typical chart counts.
+/// so the wall clock for `list --check` is roughly max-latency rather than
+/// sum-of-latencies. 8 keeps us polite to upstream registries without
+/// materially increasing rate-limit risk for typical chart counts.
 pub(crate) const RESOLVE_CONCURRENCY: usize = 8;
 
 fn main() -> ExitCode {
@@ -125,19 +151,25 @@ fn main() -> ExitCode {
 
     // `add` also works without a pre-existing charts.toml: it falls back to
     // creating one in the current directory when none is found up the tree.
-    if let Command::Add { name, url, version } = &args.command {
+    if let Command::Add {
+        name,
+        url,
+        version,
+        no_fetch,
+    } = &args.command
+    {
         let config_path = args.config_path().unwrap_or_else(|| {
             std::env::current_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."))
                 .join("charts.toml")
         });
-        return match add::run(&config_path, name, url, version.as_deref()) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("error: {e}");
-                ExitCode::FAILURE
-            }
-        };
+        return report(add::run(
+            &config_path,
+            name,
+            url,
+            version.as_deref(),
+            *no_fetch,
+        ));
     }
 
     let config_path = match args.config_path() {
@@ -150,141 +182,29 @@ fn main() -> ExitCode {
 
     match args.command {
         Command::Completion { .. } | Command::Add { .. } => unreachable!(),
-        Command::Fetch { name, all } => match fetch::run(&config_path, name.as_deref(), all) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("error: {e}");
-                ExitCode::FAILURE
-            }
-        },
-        Command::Check { name, all } => match check::run(&config_path, name.as_deref(), all) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("error: {e}");
-                ExitCode::FAILURE
-            }
-        },
+        Command::Remove { names, keep_files } => {
+            report(remove::run(&config_path, &names, keep_files))
+        }
+        Command::Sync { names, check } => report(sync::run(&config_path, &names, check)),
         Command::Update {
-            name,
-            version,
-            latest,
-            all,
-        } => match update::run(
-            &config_path,
-            name.as_deref(),
-            version.as_deref(),
-            latest,
-            all,
-        ) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("error: {e}");
-                ExitCode::FAILURE
-            }
-        },
-        Command::List { check } => match chart::load(&config_path) {
-            Ok(registry) => {
-                list_charts(&registry, check);
-                ExitCode::SUCCESS
-            }
-            Err(e) => {
-                eprintln!("error: {e}");
-                ExitCode::FAILURE
-            }
-        },
-        Command::Outdated { name } => match outdated::run(&config_path, name.as_deref()) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("error: {e}");
-                ExitCode::FAILURE
-            }
-        },
+            names,
+            to,
+            no_fetch,
+        } => report(update::run(&config_path, &names, to.as_deref(), no_fetch)),
+        Command::List {
+            names,
+            check,
+            outdated,
+        } => report(list::run(&config_path, &names, check, outdated)),
     }
 }
 
-/// Column widths for `list` / `list --check` tables. Name and pinned-version
-/// widths are derived from the registry (both known up front), so rows stream
-/// in non-interactive mode without buffering for alignment.
-///
-/// The LATEST cell is built as `{latest:LATEST_VERSION_WIDTH} ↑` (or two
-/// spaces in lieu of ` ↑` when up-to-date), so the arrow slot is always
-/// reserved and rows have predictable width regardless of which charts are
-/// outdated.
-const MIN_VERSION_WIDTH: usize = 8;
-const LATEST_VERSION_WIDTH: usize = 7;
-const LATEST_WIDTH: usize = LATEST_VERSION_WIDTH + 2;
-
-fn list_charts(registry: &chart::ChartRegistry, check: bool) {
-    let name_width = registry
-        .charts
-        .keys()
-        .map(|n| n.chars().count())
-        .max()
-        .unwrap_or(4)
-        .max(4);
-    let vw = registry
-        .charts
-        .values()
-        .map(|c| c.version.chars().count())
-        .max()
-        .unwrap_or(MIN_VERSION_WIDTH)
-        .max(MIN_VERSION_WIDTH);
-    let lw = LATEST_WIDTH;
-
-    if !check {
-        println!("{:name_width$}  {:vw$}  source", "NAME", "VERSION");
-        for (name, chart) in &registry.charts {
-            println!(
-                "{name:name_width$}  {:vw$}  {}",
-                chart.version,
-                source_str(&chart.source)
-            );
-        }
-        return;
-    }
-
-    let header = format!(
-        "{:name_width$}  {:vw$}  {:lw$}  source",
-        "NAME", "VERSION", "LATEST"
-    );
-
-    let mut progress = progress::Progress::new(registry.charts.len());
-    let color_on = progress.interactive() && color::enabled();
-    let mut buffered: Vec<String> = Vec::new();
-
-    if !progress.interactive() {
-        println!("{header}");
-    }
-
-    let charts: Vec<(&String, &chart::Chart)> = registry.charts.iter().collect();
-
-    resolve_in_parallel(&charts, |event| match event {
-        ResolveEvent::Completed { name } => progress.tick(name),
-        ResolveEvent::Row {
-            name,
-            chart,
-            result,
-        } => {
-            let cell = latest_cell(&chart.version, &result, color_on);
-            let row = format!(
-                "{name:name_width$}  {:vw$}  {cell}  {}",
-                chart.version,
-                source_str(&chart.source)
-            );
-            if progress.interactive() {
-                buffered.push(row);
-            } else {
-                println!("{row}");
-                let _ = std::io::Write::flush(&mut std::io::stdout());
-            }
-        }
-    });
-
-    if progress.interactive() {
-        progress.clear();
-        println!("{header}");
-        for r in &buffered {
-            println!("{r}");
+fn report<E: Display>(result: Result<(), E>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
         }
     }
 }
@@ -345,8 +265,10 @@ where
                 name: charts[idx].0,
             });
             slots[idx] = Some(result);
-            while next_emit < total && slots[next_emit].is_some() {
-                let result = slots[next_emit].take().unwrap();
+            while next_emit < total {
+                let Some(result) = slots[next_emit].take() else {
+                    break;
+                };
                 let (name, chart) = (charts[next_emit].0.as_str(), charts[next_emit].1);
                 on_event(ResolveEvent::Row {
                     name,
@@ -357,36 +279,4 @@ where
             }
         }
     });
-}
-
-/// Build a LATEST cell from a pre-resolved result. The cell has predictable
-/// width (`LATEST_VERSION_WIDTH + 2`): `<latest-padded-to-7> ↑` for outdated
-/// rows, `<latest-padded-to-7>  ` (two spaces) for up-to-date or unknown.
-/// When `color_on`, outdated cells are wrapped in green/yellow/orange ANSI
-/// codes by SemVer-diff severity.
-fn latest_cell(pinned: &str, result: &Result<Latest, resolver::Error>, color_on: bool) -> String {
-    let vw = LATEST_VERSION_WIDTH;
-    match result {
-        Ok(Latest::Version(v)) => {
-            let formatted = if pinned.starts_with('v') {
-                format!("v{}", v.trim_start_matches('v'))
-            } else {
-                v.trim_start_matches('v').to_string()
-            };
-            if resolver::is_up_to_date(pinned, v) {
-                format!("{formatted:vw$}  ")
-            } else {
-                let sev = color::severity(pinned, v);
-                color::paint(&format!("{formatted:vw$} ↑"), sev, color_on)
-            }
-        }
-        Ok(Latest::Unknown(_)) | Err(_) => format!("{:vw$}  ", "?"),
-    }
-}
-
-fn source_str(source: &chart::ChartSource) -> &str {
-    match source {
-        chart::ChartSource::Repo { repo } => repo.as_str(),
-        chart::ChartSource::Oci { oci } => oci.as_str(),
-    }
 }

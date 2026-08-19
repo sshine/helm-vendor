@@ -1,10 +1,11 @@
-//! `add` subcommand: register a new chart in charts.toml and vendor it.
+//! `add`: declare a chart in charts.toml and vendor it.
 //!
 //! Flow: resolve the version (explicit pin, or latest from upstream when
 //! omitted), `helm pull` it into the `charts/` directory, and only on a
 //! successful pull write the entry to charts.toml — creating the file if it
 //! does not yet exist. Pulling first means a bad pin (a version that doesn't
-//! exist upstream) fails the command and leaves charts.toml untouched.
+//! exist upstream) fails the command and leaves charts.toml untouched. With
+//! `--no-fetch` there is nothing to pull, so an explicit pin goes in unverified.
 //!
 //! If the chart name already exists, `add` degrades to `update` semantics when
 //! the requested source matches the recorded one (rewriting the pinned version
@@ -13,21 +14,20 @@
 use std::path::Path;
 
 use crate::chart::{self, Chart, ChartSource};
-use crate::fetch;
+use crate::edit;
 use crate::resolver::{self, Latest};
+use crate::sync;
 use crate::update::preserve_v_prefix;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("TOML error: {0}")]
-    Toml(#[from] toml_edit::TomlError),
-    #[error("chart error: {0}")]
+    #[error(transparent)]
     Chart(#[from] chart::Error),
-    #[error("fetch error: {0}")]
-    Fetch(#[from] fetch::Error),
-    #[error("resolver error: {0}")]
+    #[error(transparent)]
+    Edit(#[from] edit::Error),
+    #[error(transparent)]
+    Sync(#[from] sync::Error),
+    #[error(transparent)]
     Resolver(#[from] resolver::Error),
     #[error(
         "chart '{name}' already exists with a different source ({existing}); \
@@ -38,7 +38,13 @@ pub enum Error {
     Unresolved { name: String, reason: String },
 }
 
-pub fn run(config_path: &Path, name: &str, url: &str, version: Option<&str>) -> Result<(), Error> {
+pub fn run(
+    config_path: &Path,
+    name: &str,
+    url: &str,
+    version: Option<&str>,
+    no_fetch: bool,
+) -> Result<(), Error> {
     let requested = source_from_url(url);
 
     // An existing entry turns this into an `update`: same source rewrites the
@@ -54,7 +60,7 @@ pub fn run(config_path: &Path, name: &str, url: &str, version: Option<&str>) -> 
             if !same_source(&prev.source, &requested) {
                 return Err(Error::SourceConflict {
                     name: name.to_string(),
-                    existing: source_url(&prev.source).to_string(),
+                    existing: prev.source.url().to_string(),
                 });
             }
             // Keep the recorded source and chart name — the `chart` field can
@@ -70,12 +76,12 @@ pub fn run(config_path: &Path, name: &str, url: &str, version: Option<&str>) -> 
     let version = match version {
         Some(v) => v.to_string(),
         None => {
-            let probe = Chart {
+            let candidate = Chart {
                 chart: chart_name.clone(),
                 version: String::new(),
                 source: source.clone(),
             };
-            match resolver::latest_version(&probe)? {
+            match resolver::latest_version(&candidate)? {
                 // Match the existing pin's `v`-prefix style when updating.
                 Latest::Version(v) => match &existing {
                     Some(prev) => preserve_v_prefix(&prev.version, &v),
@@ -97,22 +103,25 @@ pub fn run(config_path: &Path, name: &str, url: &str, version: Option<&str>) -> 
         source,
     };
 
-    let charts_dir = config_path
-        .parent()
-        .unwrap_or(Path::new("."))
-        .join("charts");
-
-    // Pull before writing: a failed pull (e.g. a version that doesn't exist
-    // upstream) must leave charts.toml untouched.
-    fetch::pull_chart(name, &chart, &charts_dir)?;
-
-    if existing.is_some() {
-        write_version(config_path, name, &version)?;
-        println!("  updated {name} to {version}");
-    } else {
-        write_new_entry(config_path, name, &chart)?;
-        println!("  added {name} {version}");
+    if !no_fetch {
+        sync::vendor(name, &chart, &chart::charts_dir(config_path), false)?;
     }
+
+    let mut doc = edit::read(config_path)?;
+    if existing.is_some() {
+        edit::set_version(&mut doc, name, &version)?;
+    } else {
+        edit::insert(&mut doc, name, &chart);
+    }
+    edit::write(config_path, &doc)?;
+
+    let verb = if existing.is_some() {
+        "updated"
+    } else {
+        "added"
+    };
+    let trailer = if no_fetch { " (not vendored)" } else { "" };
+    println!("  {verb} {name} {version}{trailer}");
     Ok(())
 }
 
@@ -128,13 +137,6 @@ fn source_from_url(url: &str) -> ChartSource {
     }
 }
 
-fn source_url(source: &ChartSource) -> &str {
-    match source {
-        ChartSource::Repo { repo } => repo,
-        ChartSource::Oci { oci } => oci,
-    }
-}
-
 /// Two sources match iff they are the same kind and the same URL, ignoring a
 /// trailing slash (which the resolver also normalizes away).
 fn same_source(a: &ChartSource, b: &ChartSource) -> bool {
@@ -145,42 +147,4 @@ fn same_source(a: &ChartSource, b: &ChartSource) -> bool {
         }
         _ => false,
     }
-}
-
-/// Append a `[name]` table to charts.toml (creating the file if absent) while
-/// preserving any existing formatting via toml_edit.
-fn write_new_entry(config_path: &Path, name: &str, chart: &Chart) -> Result<(), Error> {
-    let mut doc = if config_path.is_file() {
-        std::fs::read_to_string(config_path)?.parse::<toml_edit::DocumentMut>()?
-    } else {
-        toml_edit::DocumentMut::new()
-    };
-
-    let mut table = toml_edit::Table::new();
-    match &chart.source {
-        ChartSource::Repo { repo } => {
-            table.insert("repo", toml_edit::value(repo.as_str()));
-        }
-        ChartSource::Oci { oci } => {
-            table.insert("oci", toml_edit::value(oci.as_str()));
-        }
-    }
-    table.insert("chart", toml_edit::value(chart.chart.as_str()));
-    table.insert("version", toml_edit::value(chart.version.as_str()));
-
-    doc.insert(name, toml_edit::Item::Table(table));
-
-    std::fs::write(config_path, doc.to_string())?;
-    Ok(())
-}
-
-/// Rewrite just the `version` field of an existing entry, leaving the rest of
-/// the table (and the file's formatting) intact.
-fn write_version(config_path: &Path, name: &str, version: &str) -> Result<(), Error> {
-    let mut doc = std::fs::read_to_string(config_path)?.parse::<toml_edit::DocumentMut>()?;
-    if let Some(table) = doc.get_mut(name).and_then(|i| i.as_table_mut()) {
-        table.insert("version", toml_edit::value(version));
-    }
-    std::fs::write(config_path, doc.to_string())?;
-    Ok(())
 }

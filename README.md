@@ -15,12 +15,11 @@ Vendor Helm charts from a declarative charts.toml registry
 Usage: helm-vendor [OPTIONS] <COMMAND>
 
 Commands:
-  add         Add a new chart to charts.toml and vendor it. Creates charts.toml if it does not exist
-  fetch       Pull chart(s) from upstream into the charts/ directory
-  check       Verify vendored charts match their upstream source
-  update      Update the version of a chart in charts.toml
-  list        List all charts and their versions
-  outdated    Show charts whose pinned version is older than what's upstream
+  add         Declare a chart in charts.toml and vendor it. Creates charts.toml if it does not exist
+  remove      Undeclare charts and delete their vendored directories
+  sync        Vendor charts so charts/ matches charts.toml. Defaults to every chart
+  update      Re-pin charts to the latest upstream version and vendor them
+  list        List charts and their pinned versions
   completion  Print a shell completion script. Source it with e.g. `eval "$(helm-vendor completion zsh)"`
   help        Print this message or the help of the given subcommand(s)
 
@@ -29,6 +28,9 @@ Options:
   -h, --help             Print help
   -V, --version          Print version
 ```
+
+Every chart-selecting command takes zero or more chart names, where naming none means all of
+them. So `sync` vendors the whole registry and `sync cilium cert-manager` vendors two charts.
 
 #### Adding a new chart
 
@@ -40,14 +42,36 @@ $ git add charts.toml charts/cert-manager/
 $ git commit -m "feat(charts): Vendored cert-manager 1.21.0"
 ```
 
-#### Updating all charts to their latest upstream versions
+#### Updating charts to their latest upstream versions
+
+`update` re-pins and vendors in one step, so charts.toml and `charts/` never disagree.
 
 ```console
-$ helm-vendor update --all --latest
-  updated cert-manager to 1.21.0
+$ helm-vendor update
+  cert-manager 1.20.1 -> 1.21.0
+  updated cert-manager
+synced 1 of 1 chart(s)
 
 $ git add charts.toml charts/cert-manager/
 $ git commit -m "chore(charts): Updated cert-manager to 1.21.0"
+```
+
+To see what is available before committing to it, ask `list`:
+
+```console
+$ helm-vendor list --outdated
+NAME          VERSION   LATEST     source
+cert-manager  1.20.1    1.21.0 ↑   https://charts.jetstack.io/
+```
+
+#### Verifying vendored charts in CI
+
+`sync --check` pulls every chart and compares it against what is committed, exiting non-zero
+when they differ. `list --outdated` exits non-zero when an upgrade is available.
+
+```console
+$ helm-vendor sync --check
+18 chart(s) in sync
 ```
 
 ### Installation

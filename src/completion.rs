@@ -6,12 +6,12 @@
 //! way to wire a positional argument up to a runtime callback. We work around
 //! this by post-processing the generator's output per shell:
 //!
-//! - **zsh**: rewrite the `:_default` action on `::name --` positionals to
+//! - **zsh**: rewrite the `:_default` action on `*::names --` positionals to
 //!   call `_helm-vendor_chart_names`, which queries the binary at TAB-time.
-//! - **bash**: strip the `[NAME]` / `[VERSION]` metavar literals that leak
-//!   into `opts="…"`, rename the generated function to `_clap_inner`, and
-//!   wrap it with a thin dispatcher that calls the chart-name helper when
-//!   the cursor sits on a chart-name positional.
+//! - **bash**: strip the positional metavars that leak into `opts="…"`, rename
+//!   the generated function to `_clap_inner`, and wrap it with a thin
+//!   dispatcher that calls the chart-name helper when the cursor sits on a
+//!   chart-name positional.
 //! - **fish**: append `complete` lines that bind chart-name positionals on
 //!   the relevant subcommands to a chart-name producer function.
 //!
@@ -73,21 +73,13 @@ fn print_chart_names(config: Option<PathBuf>) -> ExitCode {
 }
 
 /// In the generated zsh script, every chart-name positional renders as
-/// `'::name -- <description>:_default'`. Swap the trailing action for our
-/// chart-name describer; leave other `:_default` actions (e.g. on `::version`)
-/// untouched.
-///
-/// Also drop the entry advertising the internal `--chart-names` flag.
-/// `hide = true` suppresses it in `--help` output but doesn't always
-/// propagate through `clap_complete`'s generators.
+/// `'*::names -- <description>:_default'`. Swap the trailing action for our
+/// chart-name describer; leave other `:_default` actions (notably `add`'s
+/// `:name`, which names a chart that does not exist yet) untouched.
 fn patch_zsh(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len() + ZSH_HELPER.len());
     for line in raw.split_inclusive('\n') {
-        let trimmed = line.trim_start();
-        if trimmed.contains("--chart-names[") {
-            continue;
-        }
-        if trimmed.starts_with("'::name --") && line.contains(":_default'") {
+        if line.trim_start().starts_with("'*::names --") && line.contains(":_default'") {
             out.push_str(&line.replacen(":_default'", ":_helm-vendor_chart_names'", 1));
         } else {
             out.push_str(line);
@@ -97,26 +89,18 @@ fn patch_zsh(raw: &str) -> String {
     out
 }
 
-/// clap_complete's bash backend bakes positional metavars (`[NAME]`,
-/// `[VERSION]`) into the literal `opts="…"` candidate list and offers no
-/// hook for runtime values. We strip those metavars, rename the generated
-/// function out of the way, and append a wrapper that delegates to it
-/// except when the cursor is on a chart-name positional, in which case it
-/// produces candidates from `charts.toml`.
+/// clap_complete's bash backend bakes positional metavars (`[NAMES]...`,
+/// `<URL>`) into the literal `opts="…"` candidate list and offers no hook for
+/// runtime values. We strip those metavars, rename the generated function out
+/// of the way, and append a wrapper that delegates to it except when the cursor
+/// is on a chart-name positional, in which case it produces candidates from
+/// `charts.toml`.
 fn patch_bash(raw: &str) -> String {
     let renamed = raw.replacen("_helm-vendor() {", "_helm-vendor_clap_inner() {", 1);
 
     let mut stripped = String::with_capacity(renamed.len());
     for line in renamed.split_inclusive('\n') {
-        if line.trim_start().starts_with("opts=\"") {
-            let l = line
-                .replace(" [NAME]", "")
-                .replace(" [VERSION]", "")
-                .replace(" --chart-names", "");
-            stripped.push_str(&l);
-        } else {
-            stripped.push_str(line);
-        }
+        stripped.push_str(&strip_metavars(line));
     }
 
     if !stripped.ends_with('\n') {
@@ -126,18 +110,30 @@ fn patch_bash(raw: &str) -> String {
     stripped
 }
 
-/// fish doesn't bake metavars into completions, so we just drop the line
-/// advertising the internal `--chart-names` flag and append: (1) a
+/// Drop `<FOO>` / `[FOO]...` tokens from an `opts="…"` assignment, leaving the
+/// flags. Matching on the bracket rather than on a list of metavar names means
+/// renaming an argument cannot silently reintroduce the literal.
+fn strip_metavars(line: &str) -> String {
+    let Some(start) = line.find("opts=\"") else {
+        return line.to_string();
+    };
+    let open = start + "opts=\"".len();
+    let Some(len) = line[open..].find('"') else {
+        return line.to_string();
+    };
+    let kept: Vec<&str> = line[open..open + len]
+        .split_whitespace()
+        .filter(|token| !token.starts_with('<') && !token.starts_with('['))
+        .collect();
+    format!("{}{}{}", &line[..open], kept.join(" "), &line[open + len..])
+}
+
+/// fish doesn't bake metavars into completions, so we only append: (1) a
 /// chart-name producer and (2) `complete` lines that bind it to chart-name
 /// positionals on the relevant subcommands.
 fn patch_fish(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len() + FISH_APPENDIX.len());
-    for line in raw.split_inclusive('\n') {
-        if line.contains("-l chart-names") {
-            continue;
-        }
-        out.push_str(line);
-    }
+    out.push_str(raw);
     if !out.ends_with('\n') {
         out.push('\n');
     }
@@ -188,38 +184,43 @@ _helm-vendor_chart_names_helper() {
     helm-vendor "${config_arg[@]}" completion --chart-names 2>/dev/null
 }
 
-# Wrapper that intercepts chart-name positional completion before delegating
-# to the clap_complete-generated function. Detects the active subcommand and
-# how many positionals precede the cursor; offers chart names from charts.toml
-# only at the chart-name slot of fetch/vendor/check/outdated/update.
+# Wrapper that intercepts chart-name positional completion before delegating to
+# the clap_complete-generated function. The chart-selecting subcommands take a
+# variadic list, so every positional slot is a chart-name slot.
 _helm-vendor() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
-    local subcommand="" count_after=0
-    local i
+    local prev="${COMP_WORDS[COMP_CWORD-1]}"
+    local subcommand="" i
+
+    # An option that takes a value owns the following word.
+    case "$prev" in
+        --config|--to)
+            _helm-vendor_clap_inner "$@"
+            return
+            ;;
+    esac
+
     for ((i=1; i<COMP_CWORD; i++)); do
         local w="${COMP_WORDS[i]}"
-        if [[ "$w" == "--config" ]]; then
-            ((i++))
-            continue
-        fi
-        if [[ "$w" == -* ]]; then
-            continue
-        fi
+        case "$w" in
+            --config|--to)
+                ((i++))
+                continue
+                ;;
+            -*)
+                continue
+                ;;
+        esac
         if [[ -z "$subcommand" ]]; then
             subcommand="$w"
-            count_after=0
-        else
-            count_after=$((count_after + 1))
         fi
     done
 
-    if [[ "$cur" != -* && -n "$subcommand" ]]; then
+    if [[ "$cur" != -* ]]; then
         case "$subcommand" in
-            fetch|vendor|check|outdated|update)
-                if (( count_after == 0 )); then
-                    COMPREPLY=( $(compgen -W "$(_helm-vendor_chart_names_helper)" -- "$cur") )
-                    return 0
-                fi
+            sync|fetch|vendor|update|list|ls|remove|rm)
+                COMPREPLY=( $(compgen -W "$(_helm-vendor_chart_names_helper)" -- "$cur") )
+                return 0
                 ;;
         esac
     fi
@@ -251,8 +252,54 @@ function __helm_vendor_chart_names
     helm-vendor $config_arg completion --chart-names 2>/dev/null
 end
 
-complete -c helm-vendor -n "__fish_helm_vendor_using_subcommand fetch"    -f -a "(__helm_vendor_chart_names)" -d 'chart'
-complete -c helm-vendor -n "__fish_helm_vendor_using_subcommand check"    -f -a "(__helm_vendor_chart_names)" -d 'chart'
-complete -c helm-vendor -n "__fish_helm_vendor_using_subcommand outdated" -f -a "(__helm_vendor_chart_names)" -d 'chart'
-complete -c helm-vendor -n "__fish_helm_vendor_using_subcommand update; and not __fish_seen_subcommand_from (__helm_vendor_chart_names)" -f -a "(__helm_vendor_chart_names)" -d 'chart'
+complete -c helm-vendor -n "__fish_helm_vendor_using_subcommand sync"   -f -a "(__helm_vendor_chart_names)" -d 'chart'
+complete -c helm-vendor -n "__fish_helm_vendor_using_subcommand update" -f -a "(__helm_vendor_chart_names)" -d 'chart'
+complete -c helm-vendor -n "__fish_helm_vendor_using_subcommand list"   -f -a "(__helm_vendor_chart_names)" -d 'chart'
+complete -c helm-vendor -n "__fish_helm_vendor_using_subcommand remove" -f -a "(__helm_vendor_chart_names)" -d 'chart'
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metavars_are_stripped_but_flags_survive() {
+        let line = r#"            opts="-h --to --no-fetch --config --help [NAMES]...""#;
+        assert_eq!(
+            strip_metavars(line),
+            r#"            opts="-h --to --no-fetch --config --help""#
+        );
+    }
+
+    #[test]
+    fn required_metavars_are_stripped_too() {
+        let line = r#"opts="-h --no-fetch --config --help <NAME> <URL>""#;
+        assert_eq!(
+            strip_metavars(line),
+            r#"opts="-h --no-fetch --config --help""#
+        );
+    }
+
+    #[test]
+    fn lines_without_opts_are_untouched() {
+        let line = "    case \"${cmd}\" in\n";
+        assert_eq!(strip_metavars(line), line);
+    }
+
+    #[test]
+    fn subcommand_candidates_are_not_treated_as_metavars() {
+        let line = r#"opts="add remove sync update list completion help""#;
+        assert_eq!(strip_metavars(line), line);
+    }
+
+    #[test]
+    fn zsh_rewrites_only_variadic_chart_name_positionals() {
+        let raw = concat!(
+            "':name -- Chart name:_default' \\\n",
+            "'*::names -- Chart names. Omit for every chart in charts.toml:_default' \\\n",
+        );
+        let patched = patch_zsh(raw);
+        assert!(patched.contains("':name -- Chart name:_default'"));
+        assert!(patched.contains("'*::names -- Chart names. Omit for every chart in charts.toml:_helm-vendor_chart_names'"));
+    }
+}

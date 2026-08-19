@@ -1,141 +1,127 @@
+//! `update`: re-pin charts and vendor the result.
+//!
+//! Pinning and vendoring are one command because doing only the first leaves
+//! charts.toml describing a `charts/` directory that does not exist yet, and
+//! nothing in the repository records that the two disagree.
+
 use std::path::Path;
 
 use crate::chart;
+use crate::edit;
 use crate::progress;
-use crate::resolver::{self, Latest};
+use crate::resolver::Latest;
+use crate::sync;
+use crate::{ResolveEvent, resolve_in_parallel};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("TOML error: {0}")]
-    Toml(#[from] toml_edit::TomlError),
-    #[error("chart error: {0}")]
+    #[error(transparent)]
     Chart(#[from] chart::Error),
-    #[error("resolver error: {0}")]
-    Resolver(#[from] resolver::Error),
-    #[error("chart not found in charts.toml: {0}")]
-    NotFound(String),
-    #[error("provide either <NAME> <VERSION>, <NAME> --latest, or --all --latest")]
-    BadInvocation,
-    #[error("could not resolve latest version for {name}: {reason}")]
-    Unresolved { name: String, reason: String },
-    #[error("failed to update one or more charts: {names}")]
-    Multi { names: String },
+    #[error(transparent)]
+    Edit(#[from] edit::Error),
+    #[error(transparent)]
+    Sync(#[from] sync::Error),
+    #[error("--to pins one version, so it needs exactly one chart name")]
+    ToNeedsOneChart,
+    #[error("failed to update: {names}")]
+    Failed { names: String },
 }
 
 pub fn run(
     config_path: &Path,
-    name: Option<&str>,
-    version: Option<&str>,
-    latest: bool,
-    all: bool,
+    names: &[String],
+    to: Option<&str>,
+    no_fetch: bool,
 ) -> Result<(), Error> {
-    match (name, version, latest, all) {
-        (Some(n), Some(v), false, false) => set_version(config_path, n, v),
-        (Some(n), None, true, false) => bump_to_latest(config_path, n),
-        (None, None, true, true) => bump_all_to_latest(config_path),
-        _ => Err(Error::BadInvocation),
-    }
-}
-
-fn set_version(config_path: &Path, name: &str, version: &str) -> Result<(), Error> {
-    let content = std::fs::read_to_string(config_path)?;
-    let mut doc = content.parse::<toml_edit::DocumentMut>()?;
-    write_version(&mut doc, name, version)?;
-    std::fs::write(config_path, doc.to_string())?;
-    println!("  updated {name} to {version}");
-    Ok(())
-}
-
-fn bump_to_latest(config_path: &Path, name: &str) -> Result<(), Error> {
     let registry = chart::load(config_path)?;
-    let chart_entry = registry.get(name)?;
 
-    let new_version = match resolver::latest_version(chart_entry)? {
-        Latest::Version(v) => preserve_v_prefix(&chart_entry.version, &v),
-        Latest::Unknown(reason) => {
-            return Err(Error::Unresolved {
-                name: name.to_string(),
-                reason,
-            });
+    let (changed, failed) = match to {
+        Some(version) => {
+            let [name] = names else {
+                return Err(Error::ToNeedsOneChart);
+            };
+            registry.get(name)?;
+            let mut doc = edit::read(config_path)?;
+            edit::set_version(&mut doc, name, version)?;
+            edit::write(config_path, &doc)?;
+            println!("  {name} pinned to {version}");
+            (vec![name.clone()], Vec::new())
         }
+        None => bump_to_latest(config_path, &registry, names)?,
     };
 
-    if new_version == chart_entry.version {
-        println!("  {name} already at {new_version}");
-        return Ok(());
+    if !changed.is_empty() && !no_fetch {
+        sync::run(config_path, &changed, false)?;
     }
-
-    set_version(config_path, name, &new_version)
-}
-
-fn bump_all_to_latest(config_path: &Path) -> Result<(), Error> {
-    let registry = chart::load(config_path)?;
-    let content = std::fs::read_to_string(config_path)?;
-    let mut doc = content.parse::<toml_edit::DocumentMut>()?;
-
-    let mut progress = progress::Progress::new(registry.charts.len());
-    let mut failed = Vec::new();
-    for (name, chart_entry) in &registry.charts {
-        progress.tick(name);
-        match resolver::latest_version(chart_entry) {
-            Ok(Latest::Version(v)) => {
-                let new_version = preserve_v_prefix(&chart_entry.version, &v);
-                if new_version == chart_entry.version {
-                    if !progress.interactive() {
-                        println!("  {name} already at {new_version}");
-                    }
-                    continue;
-                }
-                if let Err(e) = write_version(&mut doc, name, &new_version) {
-                    progress.clear();
-                    eprintln!("  failed {name}: {e}");
-                    failed.push(name.clone());
-                } else {
-                    progress.clear();
-                    println!("  updated {name} to {new_version}");
-                }
-            }
-            Ok(Latest::Unknown(reason)) => {
-                progress.clear();
-                eprintln!("  unresolved {name}: {reason}");
-                failed.push(name.clone());
-            }
-            Err(e) => {
-                progress.clear();
-                eprintln!("  error {name}: {e}");
-                failed.push(name.clone());
-            }
-        }
-    }
-    progress.clear();
-
-    std::fs::write(config_path, doc.to_string())?;
 
     if failed.is_empty() {
         Ok(())
     } else {
-        Err(Error::Multi {
+        Err(Error::Failed {
             names: failed.join(", "),
         })
     }
 }
 
-fn write_version(doc: &mut toml_edit::DocumentMut, name: &str, version: &str) -> Result<(), Error> {
-    let table = doc
-        .get_mut(name)
-        .ok_or_else(|| Error::NotFound(name.to_string()))?
-        .as_table_mut()
-        .ok_or_else(|| Error::NotFound(name.to_string()))?;
+/// Resolve every target concurrently, writing each new pin into the same
+/// document so charts.toml is rewritten once at the end.
+fn bump_to_latest(
+    config_path: &Path,
+    registry: &chart::ChartRegistry,
+    names: &[String],
+) -> Result<(Vec<String>, Vec<String>), Error> {
+    let targets = registry.select(names)?;
+    let mut doc = edit::read(config_path)?;
 
-    let version_key = "version";
-    if !table.contains_key(version_key) {
-        table.insert(version_key, toml_edit::value(version));
-    } else if let Some(item) = table.get_mut(version_key) {
-        *item = toml_edit::value(version);
+    let mut progress = progress::Progress::new(targets.len());
+    let mut changed: Vec<String> = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
+
+    resolve_in_parallel(&targets, |event| match event {
+        ResolveEvent::Completed { name } => progress.tick(name),
+        ResolveEvent::Row {
+            name,
+            chart,
+            result,
+        } => match result {
+            Ok(Latest::Version(latest)) => {
+                let version = preserve_v_prefix(&chart.version, &latest);
+                if version == chart.version {
+                    return;
+                }
+                progress.clear();
+                match edit::set_version(&mut doc, name, &version) {
+                    Ok(()) => {
+                        println!("  {name} {} -> {version}", chart.version);
+                        changed.push(name.to_string());
+                    }
+                    Err(e) => {
+                        eprintln!("  failed {name}: {e}");
+                        failed.push(name.to_string());
+                    }
+                }
+            }
+            Ok(Latest::Unknown(reason)) => {
+                progress.clear();
+                eprintln!("  unresolved {name}: {reason}");
+                failed.push(name.to_string());
+            }
+            Err(e) => {
+                progress.clear();
+                eprintln!("  error {name}: {e}");
+                failed.push(name.to_string());
+            }
+        },
+    });
+    progress.clear();
+
+    if changed.is_empty() {
+        println!("{} chart(s) already at their latest version", targets.len());
+    } else {
+        edit::write(config_path, &doc)?;
     }
-    Ok(())
+
+    Ok((changed, failed))
 }
 
 /// If the existing pin uses a leading `v` (e.g. cert-manager's `v1.20.1`),
@@ -146,5 +132,18 @@ pub(crate) fn preserve_v_prefix(existing: &str, new: &str) -> String {
         format!("v{stripped}")
     } else {
         stripped
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn v_prefix_follows_the_existing_pin() {
+        assert_eq!(preserve_v_prefix("v1.2.3", "1.3.0"), "v1.3.0");
+        assert_eq!(preserve_v_prefix("v1.2.3", "v1.3.0"), "v1.3.0");
+        assert_eq!(preserve_v_prefix("1.2.3", "v1.3.0"), "1.3.0");
+        assert_eq!(preserve_v_prefix("1.2.3", "1.3.0"), "1.3.0");
     }
 }
