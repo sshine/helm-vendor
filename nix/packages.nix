@@ -1,40 +1,18 @@
-{ inputs, self, ... }:
+{ ... }:
 {
   perSystem =
-    { system, pkgs, ... }:
-    let
-      cargoNix = inputs.crate2nix.tools.${system}.appliedCargoNix {
-        name = "helm-vendor";
-        src = self;
-      };
+    { pkgs, lib, ... }:
+    rec {
+      checks.helm-vendor = packages.default;
 
-      helm-vendor-unwrapped = cargoNix.workspaceMembers.helm-vendor.build;
+      packages.default = pkgs.callPackage ./_package.nix { };
 
-      helm-vendor-wrapped = pkgs.symlinkJoin {
-        name = "helm-vendor";
-        paths = [ helm-vendor-unwrapped ];
-        buildInputs = [ pkgs.makeWrapper ];
-        postBuild = ''
-          wrapProgram $out/bin/helm-vendor \
-            --prefix PATH : ${
-              pkgs.lib.makeBinPath [
-                pkgs.kubernetes-helm
-                pkgs.diffutils
-              ]
-            }
-        '';
-      };
-    in
-    {
-      checks.helm-vendor = helm-vendor-unwrapped;
-
-      packages = {
-        default = helm-vendor-wrapped;
-      };
+      # The README advertises `nix run <url>#helm-vendor`.
+      packages.helm-vendor = packages.default;
 
       apps.default = {
         type = "app";
-        program = "${helm-vendor-wrapped}/bin/helm-vendor";
+        program = lib.getExe packages.default;
       };
     };
 }
