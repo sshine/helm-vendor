@@ -34,12 +34,14 @@
 //!
 //! ### Adding a new chart
 //!
+//! Omit the version to pin whatever upstream currently offers.
+//!
 //! ```console
 //! $ helm-vendor add cert-manager https://charts.jetstack.io/
-//!   added cert-manager 1.21.0
+//!   added cert-manager 1.21.1
 //!
 //! $ git add charts.toml charts/cert-manager/
-//! $ git commit -m "feat(charts): Vendored cert-manager 1.21.0"
+//! $ git commit -m "feat(charts): Vendored cert-manager 1.21.1"
 //! ```
 //!
 //! ### Updating charts to their latest upstream versions
@@ -48,12 +50,12 @@
 //!
 //! ```console
 //! $ helm-vendor update
-//!   cert-manager 1.20.1 -> 1.21.0
+//!   cert-manager v1.20.1 -> v1.21.1
 //!   updated cert-manager
 //! synced 1 of 1 chart(s)
 //!
 //! $ git add charts.toml charts/cert-manager/
-//! $ git commit -m "chore(charts): Updated cert-manager to 1.21.0"
+//! $ git commit -m "chore(charts): Updated cert-manager to v1.21.1"
 //! ```
 //!
 //! To see what is available before committing to it, ask `list`:
@@ -61,8 +63,18 @@
 //! ```console
 //! $ helm-vendor list --outdated
 //! NAME          VERSION   LATEST     source
-//! cert-manager  1.20.1    1.21.0 ↑   https://charts.jetstack.io/
+//! cert-manager  v1.20.1   v1.21.1 ↑  https://charts.jetstack.io/
 //! ```
+//!
+//! ### Removing a chart
+//!
+//! ```console
+//! $ helm-vendor remove cert-manager
+//!   removed cert-manager
+//! ```
+//!
+//! Pass `--keep-files` to drop the charts.toml entry but leave the vendored directory behind.
+//! `add` and `update` take the converse, `--no-fetch`, to write charts.toml without downloading.
 //!
 //! ### Verifying vendored charts in CI
 //!
