@@ -272,7 +272,13 @@ where
         let mut slots: Vec<Option<Result<Latest, resolver::Error>>> =
             (0..total).map(|_| None).collect();
         let mut next_emit = 0usize;
-        while let Ok((idx, result)) = rx.recv() {
+        // `loop`/`let`-`else` rather than `while let`: the latter keeps the received
+        // value alive as a temporary until the end of the body, which puts its drop
+        // order relative to the emitted rows' at the mercy of the edition.
+        loop {
+            let Ok((idx, result)) = rx.recv() else {
+                break;
+            };
             on_event(ResolveEvent::Completed {
                 name: charts[idx].0,
             });
