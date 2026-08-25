@@ -1,0 +1,33 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  verify:
+    runs-on: nixos
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches crate version
+        run: nix develop -c just check-version "${{ github.ref_name }}"
+
+      - name: CI checks
+        run: nix develop -c just ci
+
+  release:
+    needs: verify
+    runs-on: nixos
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build static binaries
+        run: nix develop -c just dist "${{ github.ref_name }}"
+
+      - name: Publish release
+        env:
+          FORGEJO_URL: ${{ github.server_url }}
+          FORGEJO_REPO: ${{ github.repository }}
+          FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: nix run .#forgejo-release -- "${{ github.ref_name }}" dist
