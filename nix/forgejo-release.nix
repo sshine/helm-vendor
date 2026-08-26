@@ -42,7 +42,7 @@
                 name: $tag,
                 draft: false,
                 prerelease: false,
-                body: "Static binaries for x86_64-linux and aarch64-linux. Verify with SHA256SUMS."
+                body: "Statically linked musl binaries. Each tarball has a matching .sha256 asset."
               }')")
             echo "created release $tag"
           fi
