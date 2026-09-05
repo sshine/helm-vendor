@@ -13,6 +13,10 @@ fmt-check:
 lint:
     nix develop -c cargo clippy -- -D warnings
 
+# Find dead Nix code
+lint-nix:
+    nix develop -c deadnix --fail nix/ flake.nix
+
 test:
     nix develop -c cargo test
 
@@ -55,7 +59,7 @@ dist version: (check-version version)
     done
     ls -1 dist
 
-ci: fmt-check lock-check lint test build doc readme-check package-check
+ci: fmt-check lock-check lint lint-nix test build doc readme-check package-check
 
 # Demo `list --check` rendering with fake data, parallel resolution, and color.
 # Models the real binary's behavior: counter ticks out-of-order as charts
